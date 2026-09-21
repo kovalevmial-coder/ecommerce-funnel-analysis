@@ -210,6 +210,73 @@ def _wilson_ci(num: int, den: int, z: float = 1.96) -> tuple[float, float]:
     return ci_low, ci_high
 
 
+def _funnel_from_flags(df: pl.DataFrame) -> pl.DataFrame:
+    """Compute the three step funnel rates from a boolean session-flag frame.
+
+    Single source of truth for the view->cart->purchase rate computation:
+    both ``funnel_rates`` (whole-frame) and ``segment_funnel`` (per-segment
+    subsets) delegate here so the step maths can never drift between the
+    aggregate and segmented views. Step labels and their order come from the
+    module-level ``_FUNNEL_STEPS``; each row's numerator is the boolean AND of
+    the converting and the basis indicator, the denominator the count of the
+    basis alone, and the Wilson CI is applied per row via ``_wilson_ci`` (whose
+    inline # TODO(stage-04) marker documents the future swap to
+    src/inference.wilson_ci).
+
+    Args:
+        df: frame with boolean ``has_view``, ``has_cart`` and ``has_purchase``
+            columns (rows are sessions; any extra columns are ignored).
+
+    Returns:
+        Exactly three rows in ``_FUNNEL_STEPS`` order with columns ``step``,
+        ``numerator``, ``denominator``, ``rate``, ``ci_low``, ``ci_high``.
+
+    Raises:
+        ValueError: if any of the three ``has_*`` step columns is missing,
+            listing the absent ones (fail-fast before silently empty counts).
+    """
+    required = ("has_view", "has_cart", "has_purchase")
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(
+            f"sessions is missing required columns: {missing}; "
+            f"got {df.columns}"
+        )
+
+    rows = []
+    for step, conv_col, base_col in _FUNNEL_STEPS:
+        # Co-occurrence via boolean AND: a session converted the step iff it
+        # reached *both* the earlier (basis) and the later (converting) stage
+        # in any order. Summing only ``conv_col`` would count jumpers who never
+        # reached the basis at all (e.g. purchasers who never viewed).
+        numerator = int((df[conv_col] & df[base_col]).sum())
+        denominator = int(df[base_col].sum())
+        rate = numerator / denominator
+        ci_low, ci_high = _wilson_ci(numerator, denominator)
+        rows.append(
+            {
+                "step": step,
+                "numerator": numerator,
+                "denominator": denominator,
+                "rate": rate,
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+            }
+        )
+
+    return pl.DataFrame(
+        rows,
+        schema={
+            "step": pl.Utf8,
+            "numerator": pl.Int64,
+            "denominator": pl.Int64,
+            "rate": pl.Float64,
+            "ci_low": pl.Float64,
+            "ci_high": pl.Float64,
+        },
+    )
+
+
 def funnel_rates(sessions: pl.DataFrame) -> pl.DataFrame:
     """Compute the view->cart->purchase conversion funnel with Wilson CIs.
 
@@ -246,43 +313,9 @@ def funnel_rates(sessions: pl.DataFrame) -> pl.DataFrame:
         ValueError: if any of the three ``has_*`` step columns is missing,
             listing the absent ones (fail-fast before silently empty counts).
     """
-    required = ("has_view", "has_cart", "has_purchase")
-    missing = [col for col in required if col not in sessions.columns]
-    if missing:
-        raise ValueError(
-            f"sessions is missing required columns: {missing}; "
-            f"got {sessions.columns}"
-        )
-
-    rows = []
-    for step, conv_col, base_col in _FUNNEL_STEPS:
-        # Co-occurrence via boolean AND: a session converted the step iff it
-        # reached *both* the earlier (basis) and the later (converting) stage
-        # in any order. Summing only ``conv_col`` would count jumpers who never
-        # reached the basis at all (e.g. purchasers who never viewed).
-        numerator = int((sessions[conv_col] & sessions[base_col]).sum())
-        denominator = int(sessions[base_col].sum())
-        rate = numerator / denominator
-        ci_low, ci_high = _wilson_ci(numerator, denominator)
-        rows.append(
-            {
-                "step": step,
-                "numerator": numerator,
-                "denominator": denominator,
-                "rate": rate,
-                "ci_low": ci_low,
-                "ci_high": ci_high,
-            }
-        )
-
-    return pl.DataFrame(
-        rows,
-        schema={
-            "step": pl.Utf8,
-            "numerator": pl.Int64,
-            "denominator": pl.Int64,
-            "rate": pl.Float64,
-            "ci_low": pl.Float64,
-            "ci_high": pl.Float64,
-        },
-    )
+    # The per-step math lives in the private ``_funnel_from_flags`` — the
+    # single source of truth shared with ``segment_funnel`` — so the aggregate
+    # and segmented views cannot drift. This function only validates that it
+    # is the whole-session frame and delegates. If that validation ever needs
+    # to differ from the segmented path, move it back here explicitly.
+    return _funnel_from_flags(sessions)

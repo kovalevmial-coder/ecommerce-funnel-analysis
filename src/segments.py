@@ -6,10 +6,17 @@ pipeline: it derives ``price_tier``, ``visit_kind``, ``is_weekend``,
 appends them to the frame. No label derivation happens anywhere else, so a
 segmenting consumer only ever needs to call this function and read the new
 columns.
+
+``segment_funnel`` pivots the Stage-02 funnel rate computation into a tidy
+per-segment frame by delegating the per-step maths to ``_funnel_from_flags``
+(the same single source of truth ``funnel_rates`` uses), guaranteeing the
+segmented and aggregate views of the same data always agree by construction.
 """
 from __future__ import annotations
 
 import polars as pl
+
+from src.funnel import _funnel_from_flags
 
 # Fixed merchandising bands for the price tier, in EUR. These are a company
 # decision for cosmetics retail (affordable/bestseller/mid-range/prestige price
@@ -149,3 +156,89 @@ def assign_segments(sessions: pl.DataFrame) -> pl.DataFrame:
         # "labels only from raw columns, raw columns untouched" rule.
         [tier, visit_kind, is_weekend, daypart, month_label]
     )
+
+
+# The only ``by`` families segment_funnel is allowed to segment on. Pinning the
+# set makes a typo a loud error instead of silently segmenting on some other
+# column the frame happens to carry.
+_SEGMENT_FAMILIES = frozenset(
+    {"price_tier", "visit_kind", "is_weekend", "daypart", "month_label"}
+)
+
+
+def segment_funnel(sessions: pl.DataFrame, by: str) -> pl.DataFrame:
+    """Compute the funnel rates separately within each value of a segment column.
+
+    One rate per (segment, step) for the three ``_FUNNEL_STEPS`` transitions,
+    conditioned within each segment's sessions. The per-step math is delegated
+    to ``_funnel_from_flags`` — the same single source of truth ``funnel_rates``
+    uses — so a segment's rates are *exactly* what ``funnel_rates`` would
+    return for that segment's rows in isolation; the segmented and aggregate
+    views of the same data cannot disagree.
+
+    ``n_sessions`` is the full size of the segment (every session that carries
+    the segment label), which is the practical-significance input for Stage 04.
+    It must NOT be read as a step denominator: each step's denominator is the
+    step-specific subset of the segment (e.g. ``cart->purchase`` divides only
+    the segment's carted sessions), exactly as in ``funnel_rates``.
+
+    The ``"NA"`` price tier (sessions with no priced events) is a real segment
+    of this frame: its rates are computed like every other segment's and its
+    size is reported, because its sessions still participate in the
+    price-independent funnel steps. Consumers of confirmatory price-tier
+    comparisons exclude it with an explicit documented filter — it is never
+    silently dropped here.
+
+    Args:
+        sessions: frame with the boolean ``has_view``/``has_cart``/
+            ``has_purchase`` columns, plus either the ``by`` column already
+            present or the raw columns (``hour, dayofweek, month,
+            session_number, median_price``) so ``assign_segments`` can derive
+            it. A frame carrying partial label columns is not supported (the
+            repository treats ``assign_segments`` as the single label owner,
+            and polars fails loudly on a duplicated column name).
+        by: one of ``price_tier``, ``visit_kind``, ``is_weekend``, ``daypart``,
+            ``month_label``.
+
+    Returns:
+        Tidy frame with ``funnel_rates``' columns (``step``, ``numerator``,
+        ``denominator``, ``rate``, ``ci_low``, ``ci_high``) plus ``segment:str``
+        and ``n_sessions:int``. One segment carries its three steps in
+        ``_FUNNEL_STEPS`` order; segments are ordered by ascending label
+        (strings lexicographically, booleans False-then-True), which keeps the
+        frame deterministic for the fixed 5-value families.
+
+    Raises:
+        ValueError: if ``by`` is not one of the documented families, or (via
+            ``_funnel_from_flags``/``assign_segments``) if the frame lacks the
+            required flag columns or raw columns.
+    """
+    if by not in _SEGMENT_FAMILIES:
+        raise ValueError(
+            f"by={by!r} is not a segment family; expected one of "
+            f"{sorted(_SEGMENT_FAMILIES)}"
+        )
+
+    # assign_segments is the single owner of the label columns. If the input
+    # already carries ``by`` the label is trusted as-is (the caller is assumed
+    # to have produced it via assign_segments); otherwise the owner is called
+    # here so segment_funnel never invents a label derivation of its own.
+    labelled = assign_segments(sessions) if by not in sessions.columns else sessions
+
+    # partition_by is a single pass over the frame (one partition per segment
+    # value) with partitions kept in input order; the explicit re-sort below is
+    # what makes the output order a contract rather than an accident.
+    parts: list[tuple[object, pl.DataFrame]] = []
+    for sub in labelled.partition_by(by):
+        segment_label = sub[by][0]
+        funnel = _funnel_from_flags(sub).with_columns(
+            pl.lit(segment_label).alias("segment"),
+            # Height of the partition == number of sessions in the segment;
+            # cf. docstring: the funnel denominators come from _funnel_from_flags
+            # (step-specific subsets), never from this column.
+            pl.lit(sub.height, dtype=pl.Int64).alias("n_sessions"),
+        )
+        parts.append((segment_label, funnel))
+
+    parts.sort(key=lambda part: part[0])
+    return pl.concat([funnel for _, funnel in parts])
