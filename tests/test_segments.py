@@ -486,6 +486,9 @@ def test_segment_funnel_accepts_every_documented_family(by: str) -> None:
         "segment",
         "n_sessions",
     ]
+    # segment stays Utf8 even for the boolean is_weekend family (contract).
+    assert result.schema["segment"] == pl.Utf8
+    assert result.schema["n_sessions"] == pl.Int64
 
 
 def test_segment_funnel_rejects_unknown_family() -> None:

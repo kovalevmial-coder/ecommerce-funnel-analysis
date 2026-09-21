@@ -212,6 +212,9 @@ def segment_funnel(sessions: pl.DataFrame, by: str) -> pl.DataFrame:
         ValueError: if ``by`` is not one of the documented families, or (via
             ``_funnel_from_flags``/``assign_segments``) if the frame lacks the
             required flag columns or raw columns.
+        ZeroDivisionError: if a segment has no session with the step's
+            prerequisite behaviour (e.g. a segment with no ``has_view`` rows);
+            identical to ``funnel_rates`` by construction.
     """
     if by not in _SEGMENT_FAMILIES:
         raise ValueError(
@@ -232,7 +235,10 @@ def segment_funnel(sessions: pl.DataFrame, by: str) -> pl.DataFrame:
     for sub in labelled.partition_by(by):
         segment_label = sub[by][0]
         funnel = _funnel_from_flags(sub).with_columns(
-            pl.lit(segment_label).alias("segment"),
+            # segment is contract-typed Utf8 even for the boolean is_weekend
+            # family, so downstream consumers (Stage 04/05 tables, plots) always
+            # see a string segment key.
+            pl.lit(segment_label, dtype=pl.Utf8).alias("segment"),
             # Height of the partition == number of sessions in the segment;
             # cf. docstring: the funnel denominators come from _funnel_from_flags
             # (step-specific subsets), never from this column.
