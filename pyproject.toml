@@ -1,0 +1,13 @@
+[project]
+name = "ecommerce-funnel-analysis"
+version = "0.1.0"
+description = "E-commerce funnel (view -> cart -> purchase) conversion and product analytics portfolio project"
+requires-python = ">=3.12"
+
+# Dependency pins live in requirements.txt (single source of truth for reproducibility);
+# they are intentionally NOT duplicated here.
+
+[tool.pytest.ini_options]
+# Make the repo root importable so `import src` resolves regardless of the cwd.
+pythonpath = ["."]
+testpaths = ["tests"]
