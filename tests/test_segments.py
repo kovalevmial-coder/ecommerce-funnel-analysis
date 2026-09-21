@@ -129,19 +129,15 @@ def test_exhaustive_tier_mapping_over_real_price_scope() -> None:
 
     Property-style sweep: walk the actual observed price continuum
     ([-80, 328], covering all four bands) at a fine step. No value may fall
-    through ``otherwise`` (a gap) — assert it does not by checking the sweep
-    never mutates the null-price row. The assertion is exact per row so a
-    missing band or an overlap anywhere in the chain would fail this test.
+    through ``otherwise`` (a gap) — assert it does not by checking each sweep
+    value lands in the tier the documented bands prescribe.
     """
-    # nulls must be preserved verbatim through the sweep (not consumed by a
-    # catch-all tier).
     prices = list(range(-80, 329))  # -80..328 (ints cover the band edges)
     sweep = pl.DataFrame(
         {"hour": 0, "dayofweek": 0, "month": 10, "session_number": 1, "median_price": prices}
     )
     result = assign_segments(sweep)
     tiers = result["price_tier"].to_list()
-    assert tiers.count("null") == 0  # sentinel impossible under a correct chain
     # Recompute what each integer price *should* be from the documented bands.
     for price, tier in zip(prices, tiers):
         if price < 5:
@@ -152,6 +148,29 @@ def test_exhaustive_tier_mapping_over_real_price_scope() -> None:
             assert tier == "premium"
         else:
             assert tier == "luxury"
+
+
+def test_tier_chain_stays_in_lockstep_with_constants() -> None:
+    """The when-chain must agree with PRICE_TIERS, not just with hand-literal copies.
+
+    The boundary tests above re-encode the bands by hand; this one derives the
+    expectation from the constants themselves, so a drift between the chain and
+    PRICE_TIERS is caught even if both are edited consistently by hand.
+    """
+    # Sample every band interior plus both extremes (-100..400 at step 0.1).
+    prices = [p / 10 for p in range(-1000, 4001)]
+    expected = {}
+    for price in prices:
+        for name, (band_lo, band_hi) in PRICE_TIERS.items():
+            if band_lo <= price < band_hi:
+                expected[price] = name
+                break
+
+    sweep = pl.DataFrame(
+        {"hour": 0, "dayofweek": 0, "month": 10, "session_number": 1, "median_price": prices}
+    )
+    for price, tier in zip(prices, assign_segments(sweep)["price_tier"].to_list()):
+        assert tier == expected[price], f"chain {tier} != PRICE_TIERS {expected[price]} at {price}"
 
 
 def test_visit_kind_daypart_and_weekend_labels() -> None:
@@ -232,7 +251,7 @@ def test_assign_segments_raises_on_missing_columns() -> None:
 def test_band_edges_match_declared_constants() -> None:
     """The tier band edges and daypart edges are exactly as documented."""
     assert PRICE_TIERS == {
-        "budget": (0.0, 5.0),
+        "budget": (-float("inf"), 5.0),
         "mid": (5.0, 30.0),
         "premium": (30.0, 150.0),
         "luxury": (150.0, float("inf")),
@@ -245,7 +264,7 @@ def test_band_edges_match_declared_constants() -> None:
     }
 
 
-def test_hour_municipal_range_is_exhaustive_across_dayparts() -> None:
+def test_hour_24h_range_is_exhaustive_across_dayparts() -> None:
     """Every real hour 0..23 must land in exactly one daypart."""
     sweep = pl.DataFrame(
         {"hour": list(range(24)), "dayofweek": 0, "month": 10, "session_number": 1, "median_price": 1.0}

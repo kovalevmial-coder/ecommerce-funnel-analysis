@@ -18,7 +18,7 @@ import polars as pl
 # moving target. Bands are [low, high): budget <5, mid [5,30), premium
 # [30,150), luxury [150, inf).
 PRICE_TIERS: dict[str, tuple[float, float]] = {
-    "budget": (0.0, 5.0),
+    "budget": (-float("inf"), 5.0),  # negatives and 0.0 are budget (r < 5)
     "mid": (5.0, 30.0),
     "premium": (30.0, 150.0),
     "luxury": (150.0, float("inf")),
@@ -118,9 +118,10 @@ def assign_segments(sessions: pl.DataFrame) -> pl.DataFrame:
 
     is_weekend = pl.col("dayofweek").is_in([5, 6]).alias("is_weekend")
 
-    # Single exhaustive chain over DAYPARTS in hour order; every hour 0..23
-    # lands in exactly one part, and hours outside 0..23 would raise a polars
-    # comparison error rather than silently mislabel (fail fast).
+    # Single exhaustive chain over DAYPARTS in hour order: the chain is total
+    # (every hour value maps to a part), so there is no silent gap. The 0..23
+    # contract itself is enforced upstream — ``hour`` is extracted from a real
+    # datetime by ``session_features`` — not re-checked here.
     daypart = (
         pl.when(pl.col("hour") < 6)
         .then(pl.lit("night"))
