@@ -16,6 +16,10 @@ import pytest
 
 from src.plots import assets_path, plot_funnel
 
+# pyplot is imported for the close-contract assertion below; src.plots already
+# forces the Agg backend at import, so this is safe under any display.
+import matplotlib.pyplot as plt
+
 # The 3-row funnel_rates-shaped contract frame (Task 2 output schema). Wilson
 # CIs are precomputed via ``src.funnel._wilson_ci`` for the hand-set counts so
 # the frame is internally consistent, not just shaped:
@@ -78,6 +82,7 @@ def test_plot_funnel_writes_png_into_missing_parent_dirs(tmp_path: Path) -> None
     assert out.stat().st_size > 0
     assert _png_signature(out) == b"\x89PNG\r\n\x1a\n"
     assert result is None  # contract: returns nothing, figure closed internally
+    assert plt.get_fignums() == []  # contract: no figure survives the call
 
 
 def test_plot_funnel_writes_png_into_deeply_nested_path(tmp_path: Path) -> None:
@@ -92,7 +97,7 @@ def test_plot_funnel_writes_png_into_deeply_nested_path(tmp_path: Path) -> None:
     assert _png_signature(out) == b"\x89PNG\r\n\x1a\n"
 
 
-def test_plot_funnel_fails_fast_on_missing_columns() -> None:
+def test_plot_funnel_fails_fast_on_missing_columns(tmp_path: Path) -> None:
     """Missing contract columns must raise, listing the absent ones (fail-fast)."""
     with pytest.raises(ValueError, match="ci_high"):
-        plot_funnel(_funnel_frame().drop("ci_high"), Path("whatever.png"))
+        plot_funnel(_funnel_frame().drop("ci_high"), tmp_path / "x.png")
