@@ -188,7 +188,7 @@ def _wilson_ci(num: int, den: int, z: float = 1.96) -> tuple[float, float]:
 
     Args:
         num: successful trials (non-negative integer).
-        den: total trials; must satisfy 1 <= num <= den.
+        den: total trials; must satisfy 0 <= num <= den.
         z: standard-normal critical value (1.96 for a two-sided 95% CI).
 
     Returns:
@@ -225,8 +225,9 @@ def funnel_rates(sessions: pl.DataFrame) -> pl.DataFrame:
       *any* purchaser who saw a product, regardless of whether they carted —
       i.e. it deliberately includes "jumpers" who bought without adding to the
       cart (direct-purchase journeys). Excluding them would overstate the drop
-      caused by the cart step; the 10 direct purchasers in the real data are a
-      small but real segment this step must not sweep under the rug.
+      caused by the cart step; the 29,328 direct purchasers in the real data
+      (18.8% of purchase sessions) are a small but real segment this step must
+      not sweep under the rug.
 
     Confidence intervals come from the Wilson score method (see ``_wilson_ci``),
     which stays honest for small step counts where the Wald normal
