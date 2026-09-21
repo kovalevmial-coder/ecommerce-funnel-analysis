@@ -18,7 +18,7 @@ import polars as pl
 # the src/ package importable regardless of the invocation directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.data_io import event_files, load_events_lazy, write_events_parquet
+from src.data_io import write_events_parquet
 from src.eda import integrity_report
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]

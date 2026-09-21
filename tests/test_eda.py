@@ -3,7 +3,8 @@
 The synthetic event frame is crafted so every returned key of
 ``integrity_report`` takes a non-trivial value: sessions that skip funnel steps,
 a session id reused across two users, missing values encoded BOTH as empty
-strings (the raw CSV convention) and as real nulls, and zero-price rows.
+strings (the raw CSV convention) and as real nulls, zero-price rows, and a
+negative-priced row (the real dataset has 131 such rows, down to -79.37).
 """
 from __future__ import annotations
 
@@ -53,7 +54,7 @@ def events() -> pl.DataFrame:
                 "Apple", "Apple", "Apple",
                 "",               # row 12 missing brand
             ],
-            "price": [0.0, 999.0, 49.9, 49.9, 15.0, 5.0, 0.0, 0.0, 700.0, 700.0, 700.0, 5.0],
+            "price": [0.0, 999.0, 49.9, 49.9, 15.0, 5.0, 0.0, 0.0, 700.0, 700.0, 700.0, -79.37],
             "user_id": [1, 1, 2, 2, 3, 4, 5, 5, 6, 6, 7, 8],
             "user_session": [
                 "sess_a", "sess_a",
@@ -79,7 +80,7 @@ def _expected_full_report() -> dict:
         "event_type_counts": {"cart": 3, "purchase": 2, "remove_from_cart": 1, "view": 6},
         "brand_missing_pct": 25.0,         # rows 1, 5, 12 (3/12)
         "category_code_missing_pct": 50.0, # rows 1, 3, 4, 7, 8, 12 (6/12)
-        "price_min": 0.0,
+        "price_min": -79.37,             # row 12 is negative-priced (real-data quirk)
         "price_max": 999.0,
         "price_zero_share": 0.25,          # rows 1, 7, 8 (3/12)
         "zero_price_purchases": 0,
