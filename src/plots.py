@@ -174,6 +174,87 @@ def plot_funnel(rates: pl.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_funnel_stages(rates: pl.DataFrame, out_path: Path) -> None:
+    """Render the classic trapezoid funnel chart (one stage per funnel step).
+
+    Companion to :func:`plot_funnel`: the bar chart shows each step's *rate*
+    (the funnel read as three conditional probabilities on one axis), while the
+    trapezoid chart shows *volume-shape* — absolute sessions narrowing top to
+    bottom, the way business stakeholders read a funnel. Both consume the same
+    ``funnel_rates`` frame, so the counts and rates on the trapezoids cannot
+    drift from the numbers table they are rendered from.
+
+    Trapezoids are drawn as ``fill_betweenx`` bands: each stage spans its own
+    y-row, width-proportional to ``numerator``, labelled with the absolute
+    count / basis / conversion rate in the centre and the step name at the
+    left. No CI whiskers here — the per-step uncertainty is already the bar
+    chart's job (``plot_funnel``) and a width-scaled CI is invisible at these
+    magnitudes.
+
+    Args:
+        rates: ``funnel_rates`` output — the three contract rows with columns
+            ``step``, ``numerator``, ``denominator``, ``rate``, ``ci_low``,
+            ``ci_high``.
+        out_path: destination PNG path; missing parent directories are created.
+
+    Returns:
+        None (the chart is written to ``out_path``).
+
+    Raises:
+        ValueError: if any contract column is missing, listing the absent ones.
+    """
+    missing = [col for col in _REQUIRED_COLUMNS if col not in rates.columns]
+    if missing:
+        raise ValueError(
+            f"rates is missing required columns: {missing}; got {rates.columns}"
+        )
+
+    steps = rates["step"].to_list()
+    counts = rates["numerator"].to_list()
+    denominators = rates["denominator"].to_list()
+    conv_rates = rates["rate"].to_list()
+    widths = [count / max(counts) for count in counts]  # 0..1 relative widths
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    n = len(counts)
+    # Top-to-bottom row bands: the first (widest) stage sits at the top.
+    for i, (step, count, den, rate, width) in enumerate(
+        zip(steps, counts, denominators, conv_rates, widths)
+    ):
+        y_top = n - i
+        y_bot = n - i - 1
+        # Tapered look: a stage narrows from its own width (top) toward the next
+        # stage's width (bottom); the last stage keeps its own width throughout
+        # (no next stage to narrow toward).
+        w_bot = widths[i + 1] if i + 1 < n else width
+        ax.fill_betweenx(
+            [y_bot, y_top],
+            [0.5 - width / 2, 0.5 - w_bot / 2],
+            [0.5 + width / 2, 0.5 + w_bot / 2],
+            color=_STEP_META[step][0],
+            alpha=0.85,
+            zorder=2,
+        )
+        ax.text(0.02, (y_bot + y_top) / 2, step, ha="left", va="center", zorder=3)
+        ax.text(
+            0.5,
+            (y_bot + y_top) / 2,
+            f"{count:,} of {den:,}\n({rate:.1%})",
+            ha="center",
+            va="center",
+            zorder=3,
+        )
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(-0.2, n + 0.2)
+    ax.axis("off")
+    ax.set_title("view → cart → purchase conversion funnel (sessions)")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 # Contract columns the segment-rate chart reads: n_sessions feeds the bar labels
 # and ci_low/ci_high the whiskers, so a frame missing either would silently
 # produce a misleading chart.

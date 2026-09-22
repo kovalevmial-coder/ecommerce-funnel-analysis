@@ -21,6 +21,7 @@ from matplotlib.collections import PolyCollection
 from src.plots import (
     assets_path,
     plot_funnel,
+    plot_funnel_stages,
     plot_price_conversion_curve,
     plot_segment_rates,
 )
@@ -110,6 +111,58 @@ def test_plot_funnel_fails_fast_on_missing_columns(tmp_path: Path) -> None:
     """Missing contract columns must raise, listing the absent ones (fail-fast)."""
     with pytest.raises(ValueError, match="ci_high"):
         plot_funnel(_funnel_frame().drop("ci_high"), tmp_path / "x.png")
+
+
+# --- plot_funnel_stages ------------------------------------------------------
+
+
+def test_plot_funnel_stages_writes_png_into_missing_parent_dirs(tmp_path: Path) -> None:
+    """A PNG must land at out_path with parents created; figure closed, nothing returned."""
+    out = tmp_path / "figures" / "stages" / "funnel_stages.png"
+    assert not out.parent.exists()
+
+    result = plot_funnel_stages(_funnel_frame(), out)
+
+    assert out.exists()
+    assert out.stat().st_size > 0
+    assert _png_signature(out) == b"\x89PNG\r\n\x1a\n"
+    assert result is None
+    assert plt.get_fignums() == []
+
+
+def test_plot_funnel_stages_draws_one_trapezoid_per_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One band per funnel step, ordered top=first step, each with count/rate label.
+
+    The frame's rows are (view->cart 1000, cart->purchase 400, view->purchase
+    250); monkeypatching ``plt.close`` captures the axes for inspection because
+    the function always closes its own figure.
+    """
+    captured = _spy_on_close(monkeypatch)
+
+    plot_funnel_stages(_funnel_frame(), tmp_path / "stages.png")
+
+    ax = captured["ax"]
+    # fill_betweenx leaves PolyCollection artists; the classic funnel is three
+    # tapered bands, so exactly three are expected.
+    n_bands = sum(1 for c in ax.collections if isinstance(c, PolyCollection))
+    assert n_bands == 3
+    texts = [t.get_text() for t in ax.texts]
+    # Every absolute count and its conditional rate appear on the chart — the
+    # volume-shape claim is built from the same numbers as the table. Labels
+    # carry a newline between the count line and the rate line, so exact-match.
+    assert "1,000 of 2,000\n(50.0%)" in texts
+    assert "250 of 2,000\n(12.5%)" in texts
+    assert "400 of 1,000\n(40.0%)" in texts
+    assert "conversion funnel" in ax.get_title()
+    assert plt.get_fignums() == []
+
+
+def test_plot_funnel_stages_fails_fast_on_missing_columns(tmp_path: Path) -> None:
+    """Missing contract columns must raise, listing the absent ones (fail-fast)."""
+    with pytest.raises(ValueError, match="numerator"):
+        plot_funnel_stages(_funnel_frame().drop("numerator"), tmp_path / "x.png")
 
 
 # --- plot_segment_rates ---------------------------------------------------

@@ -114,7 +114,7 @@ import polars as pl  # noqa: E402
 from IPython.display import Image, Markdown, display  # noqa: E402
 from src.funnel import funnel_rates  # noqa: E402
 import src.plots  # noqa: E402,F401  (applies project style, sets Agg backend)
-from src.plots import plot_funnel  # noqa: E402
+from src.plots import plot_funnel, plot_funnel_stages  # noqa: E402
 
 print(f"repo root:    {REPO_ROOT}")
 print(f"sessions:     {SESSIONS_FILE}")
@@ -197,6 +197,19 @@ _funnel_plot_path = REPO_ROOT / src.plots.assets_path("funnel_chart")
 plot_funnel(funnel, _funnel_plot_path)
 display(Image(filename=str(_funnel_plot_path)))
 print(f"saved {_funnel_plot_path}")
+"""
+
+_C7B_STAGES_PLOT = """\
+# Classic trapezoid funnel — the same funnel_rates frame, drawn as narrowing
+# volume stages (absolute sessions reaching each converting step) instead of as
+# a bar chart. The trapezoid width is proportional to the step's numerator, so
+# the volume-shape read ("where does the funnel physically narrow?") matches the
+# absolute-loss framing of notebook 05. Generated through the same asset
+# convention and displayed inline like the bar chart above.
+_funnel_stages_path = REPO_ROOT / src.plots.assets_path("funnel_stages")
+plot_funnel_stages(funnel, _funnel_stages_path)
+display(Image(filename=str(_funnel_stages_path)))
+print(f"saved {_funnel_stages_path}")
 """
 
 _C8_BOTTLENECK_MD = """\
@@ -285,6 +298,7 @@ _CELIS = [
     {"kind": "markdown", "source": _C5_RAW_VS_RATE_MD},
     {"kind": "code", "source": _C6_HEADLINE},
     {"kind": "code", "source": _C7_PLOT},
+    {"kind": "code", "source": _C7B_STAGES_PLOT},
     {"kind": "markdown", "source": _C8_BOTTLENECK_MD},
     {"kind": "code", "source": _C9_DIAGNOSTICS},
     {"kind": "markdown", "source": _C10_REACHED_STEP_MD},

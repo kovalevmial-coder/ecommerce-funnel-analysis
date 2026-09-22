@@ -71,7 +71,7 @@ tests/               pytest suite for src/ (80 tests)
 reports/
   pre_registration.md         The pinned confirmatory plan (SHA 35317bc)
   05_executive_summary.html   HTML executive summary
-assets/              The nine committed charts referenced below
+assets/              The ten committed charts referenced below
 data/                Raw CSVs + processed parquet (git-ignored, too large for git)
 ```
 
@@ -230,6 +230,12 @@ $$n = \left[\frac{z_{1-\alpha/2}\,\sqrt{2\bar{p}(1-\bar{p})} \;+\; z_{\text{powe
 | view→cart | 0.184182 | 788,430/4,280,701 | [0.183816, 0.184550] |
 | cart→purchase | 0.128111 | 126,289/985,780 | [0.127452, 0.128772] |
 | view→purchase | 0.027195 | 116,412/4,280,701 | [0.027041, 0.027349] |
+
+The same rates drawn the way a business reads a funnel — as narrowing volume stages (absolute sessions reaching each converting step), not as a bar chart:
+
+![Funnel stages](assets/funnel_stages.png)
+
+The trapezoid widths are proportional to absolute sessions; the *rate-height* reading is the bar chart above (`funnel_chart.png`, the banner), while this chart carries the *volume-shape* reading — where the funnel physically narrows — that motivates the absolute-loss framing of notebook 05.
 
 Funnel jump diagnostics (notebook 02): **29,328** purchase sessions never carted (18.85% of 155,617 purchase sessions), **197,350** cart sessions never viewed (20.02% of 985,780 cart sessions), **3,431,995** sessions viewed but never carted.
 
