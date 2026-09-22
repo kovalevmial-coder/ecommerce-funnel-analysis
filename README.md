@@ -353,7 +353,7 @@ Contributions that keep the repo honest are welcome: add a test that crosses the
 
 ## License
 
-Distributed under the **MIT License**. Copyright (c) 2026 **Dmitrii (dimassaa)**. See `LICENSE` for the full text.
+Distributed under the **MIT License**. Copyright (c) 2026 **dimassaa**. See `LICENSE` for the full text.
 
 ## Acknowledgements
 
