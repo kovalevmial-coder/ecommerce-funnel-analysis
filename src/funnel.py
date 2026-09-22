@@ -10,6 +10,15 @@ from __future__ import annotations
 
 import polars as pl
 
+from src.inference import wilson_ci
+
+# Back-compat alias: stage-02 tests (tests/test_funnel_rates.py) import
+# ``_wilson_ci`` from this module and stage-03 plot code/docstrings reference
+# ``src.funnel._wilson_ci``. The alias is the exact function object from
+# ``src.inference``, so the ``z`` keyword and its default are preserved and no
+# stage-02/03 consumer needs updating.
+_wilson_ci = wilson_ci
+
 # Columns the events frame must expose for the pipeline to be computable.
 # ``product_id`` is required beyond the five funnel booleans because
 # ``n_products`` counts distinct products per session; without it the contract
@@ -167,49 +176,6 @@ _FUNNEL_STEPS = [
 ]
 
 
-def _wilson_ci(num: int, den: int, z: float = 1.96) -> tuple[float, float]:
-    """Score (Wilson) 95% confidence interval for a binomial proportion.
-
-    Returns ``(ci_low, ci_high)`` for the observed proportion ``num / den``,
-    using the Wilson score interval with critical value ``z`` (1.96 ~ 95%).
-    The score method is preferred over the Wald interval here: Wald's normal
-    approximation collapses to a point exactly when ``num == den``, can invert
-    outside (0, 1) for proportions near the edges, and is badly sized for small
-    ``den``. Wilson keeps coverage near nominal for small and edge proportions,
-    and by construction confines the interval to (0, 1) for ``0 < num < den``
-    (equal-weight: both endpoints fall strictly inside). It degrades to the
-    exact boundary value (0 or 1) only when the data itself is at a boundary
-    (``num == 0`` / ``num == den``) — that is honest, not a special case.
-
-    This helper is the Stage-02 inline placeholder.
-
-    # TODO(stage-04): replace this local implementation with
-    # src/inference.wilson_ci and delete the marker.
-
-    Args:
-        num: successful trials (non-negative integer).
-        den: total trials; must satisfy 0 <= num <= den.
-        z: standard-normal critical value (1.96 for a two-sided 95% CI).
-
-    Returns:
-        ``(ci_low, ci_high)`` floats, with ``ci_low <= num / den <= ci_high``
-        and both endpoints within [0, 1] by construction.
-    """
-    if den < 1 or num > den:
-        raise ValueError(f"wilson_ci requires 0 <= num <= den, got num={num}, den={den}")
-    p = num / den
-    # Wilson's closed form: re-centre the sample proportion towards z^2/(2n)
-    # and widen the radius by the z^2/(4n^2) variance term, all normalised by
-    # (1 + z^2/n). Rewriting the textbook equation this way makes the boundary
-    # behaviour transparent (it stays a ratio of non-negative terms).
-    centre = p + (z**2) / (2 * den)
-    radius = z * ((p * (1 - p) / den) + (z**2) / (4 * den**2)) ** 0.5
-    normalise = 1 + (z**2) / den
-    ci_low = max(0.0, (centre - radius) / normalise)
-    ci_high = min(1.0, (centre + radius) / normalise)
-    return ci_low, ci_high
-
-
 def _funnel_from_flags(df: pl.DataFrame) -> pl.DataFrame:
     """Compute the three step funnel rates from a boolean session-flag frame.
 
@@ -219,9 +185,9 @@ def _funnel_from_flags(df: pl.DataFrame) -> pl.DataFrame:
     aggregate and segmented views. Step labels and their order come from the
     module-level ``_FUNNEL_STEPS``; each row's numerator is the boolean AND of
     the converting and the basis indicator, the denominator the count of the
-    basis alone, and the Wilson CI is applied per row via ``_wilson_ci`` (whose
-    inline # TODO(stage-04) marker documents the future swap to
-    src/inference.wilson_ci).
+    basis alone, and the Wilson CI is applied per row via ``wilson_ci`` from
+    ``src.inference`` (imported here under the ``_wilson_ci`` back-compat
+    alias).
 
     Args:
         df: frame with boolean ``has_view``, ``has_cart`` and ``has_purchase``
@@ -252,7 +218,7 @@ def _funnel_from_flags(df: pl.DataFrame) -> pl.DataFrame:
         numerator = int((df[conv_col] & df[base_col]).sum())
         denominator = int(df[base_col].sum())
         rate = numerator / denominator
-        ci_low, ci_high = _wilson_ci(numerator, denominator)
+        ci_low, ci_high = wilson_ci(numerator, denominator)
         rows.append(
             {
                 "step": step,
@@ -296,9 +262,9 @@ def funnel_rates(sessions: pl.DataFrame) -> pl.DataFrame:
       (18.8% of purchase sessions) are a small but real segment this step must
       not sweep under the rug.
 
-    Confidence intervals come from the Wilson score method (see ``_wilson_ci``),
-    which stays honest for small step counts where the Wald normal
-    approximation would be point-esque or out of range.
+    Confidence intervals come from the Wilson score method (see
+    ``src.inference.wilson_ci``), which stays honest for small step counts
+    where the Wald normal approximation would be point-esque or out of range.
 
     Args:
         sessions: frame with boolean ``has_view``, ``has_cart`` and
