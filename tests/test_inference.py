@@ -32,6 +32,17 @@ Brief-example correction (task-3): the task brief's sparse example
 expected cells of exactly 5), so it is the boundary for valid, not a sparse
 counterexample. The genuinely sparse test uses [[20,0],[0,2]]
 (expected_min ~ 0.18); [[10,0],[0,10]] pins the valid=True boundary instead.
+
+Sample size / power (task-4) pins:
+7. required_n_per_group matches statsmodels NormalIndPower().solve_power on a
+   Cohen's-h effect size at rel=0.01 — a deliberately loose, documented
+   tolerance: our closed form sizes on the raw pooled proportion difference
+   while statsmodels sizes on the arcsine (Cohen's h) family, so the two
+   normal-approximations differ by a small structural factor on tiny effects.
+   Sanity: larger mde -> smaller n; n positive finite.
+8. achieved_power is the inverse of required_n_per_group: at
+   n = round(required_n(...)) it recovers the target power within a loose
+   band (rel=5%, absorbing the integer rounding of n).
 """
 from __future__ import annotations
 
@@ -42,13 +53,23 @@ import polars as pl
 import pytest
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
+from statsmodels.stats.power import NormalIndPower
 from statsmodels.stats.proportion import (
     confint_proportions_2indep,
     proportion_confint,
+    proportion_effectsize,
     proportions_ztest,
 )
 
-from src.inference import bonferroni, chi2_independence, fdr_bh, two_prop_ztest, wilson_ci
+from src.inference import (
+    achieved_power,
+    bonferroni,
+    chi2_independence,
+    fdr_bh,
+    required_n_per_group,
+    two_prop_ztest,
+    wilson_ci,
+)
 
 # True Wilson endpoints at the pinned teaching default z=1.96, computed from
 # the closed form and cross-checked against statsmodels with the same z.
@@ -367,3 +388,124 @@ def test_fdr_bh_empty_and_nan_safe() -> None:
     assert math.isnan(got[1])
     assert got[2] == pytest.approx(0.045, rel=1e-6)
     assert all(type(v) is float for v in got if not math.isnan(v))
+
+
+# --- required_n_per_group / achieved_power -----------------------------------
+# Cross-check anchor: p0=0.02, mde=0.005 -> p1=0.025 (the Stage-04 example),
+# alpha=0.05 two-sided, power=0.8. The rel=0.01 tolerance is documented in the
+# module header: closed form (raw pooled proportion difference) vs statsmodels
+# NormalIndPower (Cohen's h / arcsine family) differ structurally by a small
+# factor on tiny effects — that is a formula-family difference, not a bug.
+
+def test_required_n_per_group_matches_statsmodels_solve_power() -> None:
+    """Closed-form n/group must match statsmodels solve_power at rel=0.01.
+
+    statsmodels sizes on Cohen's h (arcsine effect size); this module sizes on
+    the raw pooled-H0 proportion difference. Both are normal-approximation
+    formulas but not algebraically identical, hence the documented 1% band
+    rather than a tight pin.
+    """
+    n_ours = required_n_per_group(0.02, 0.005, 0.05, 0.8)
+    n_sm = NormalIndPower().solve_power(
+        effect_size=proportion_effectsize(0.02, 0.025),
+        alpha=0.05,
+        power=0.8,
+        ratio=1.0,
+        alternative="two-sided",
+    )
+    assert n_ours == pytest.approx(float(n_sm), rel=0.01)
+    # Contract: a positive finite plain float.
+    assert n_ours > 0
+    assert math.isfinite(n_ours)
+    assert type(n_ours) is float
+
+
+def test_required_n_per_group_mde_monotonicity() -> None:
+    """A larger detectable effect needs a smaller sample: n(mde=0.005) > n(0.010).
+
+    Monotonicity is a structural sanity check on the 1/mde^2 scaling: it would
+    catch a sign or squared-term regression that a single cross-check point
+    could miss.
+    """
+    n_small_mde = required_n_per_group(0.02, 0.005, 0.05, 0.8)
+    n_large_mde = required_n_per_group(0.02, 0.010, 0.05, 0.8)
+    assert n_small_mde > n_large_mde > 0
+    assert math.isfinite(n_large_mde)
+
+
+def test_required_n_per_group_negative_mde_is_accepted() -> None:
+    """mde sign only picks the H1 direction (p1 = p0 + mde); magnitude sizes n.
+
+    A negative mde (detecting a decrease) must produce a valid positive n —
+    the guards reject only mde == 0, not the direction.
+    """
+    n_down = required_n_per_group(0.05, -0.01, 0.05, 0.8)
+    assert n_down > 0
+    assert math.isfinite(n_down)
+    assert type(n_down) is float
+
+
+def test_required_n_per_group_guards() -> None:
+    """Invalid probability/rate arguments must raise ValueError, fail fast.
+
+    Guards: 0 < base_rate < 1, mde != 0 (and p1 stays inside (0,1)),
+    0 < alpha < 1, 0 < power < 1.
+    """
+    with pytest.raises(ValueError, match="base_rate"):
+        required_n_per_group(0.0, 0.005, 0.05, 0.8)
+    with pytest.raises(ValueError, match="base_rate"):
+        required_n_per_group(1.0, 0.005, 0.05, 0.8)
+    with pytest.raises(ValueError, match="mde"):
+        required_n_per_group(0.02, 0.0, 0.05, 0.8)
+    # p1 = base_rate + mde must remain a valid probability.
+    with pytest.raises(ValueError, match="p1"):
+        required_n_per_group(0.99, 0.05, 0.05, 0.8)
+    with pytest.raises(ValueError, match="alpha"):
+        required_n_per_group(0.02, 0.005, 0.0, 0.8)
+    with pytest.raises(ValueError, match="alpha"):
+        required_n_per_group(0.02, 0.005, 1.0, 0.8)
+    with pytest.raises(ValueError, match="power"):
+        required_n_per_group(0.02, 0.005, 0.05, 0.0)
+    with pytest.raises(ValueError, match="power"):
+        required_n_per_group(0.02, 0.005, 0.05, 1.0)
+
+
+def test_achieved_power_round_trip_with_required_n() -> None:
+    """achieved_power at n = round(required_n(...)) recovers the target power.
+
+    The round-trip pins the two functions as mutual inverses. The band is
+    loose (rel=5%) because rounding n to a whole subject shifts power by a
+    small discrete step — that rounding, not a formula mismatch, is the
+    expected residual.
+    """
+    target = 0.8
+    n = round(required_n_per_group(0.02, 0.005, 0.05, target))
+    got = achieved_power(0.02, 0.005, n, 0.05)
+    assert got == pytest.approx(target, rel=0.05)
+    assert 0.0 <= got <= 1.0
+    assert type(got) is float
+
+
+def test_achieved_power_monotonicity_in_n() -> None:
+    """Power must increase with n: more data, more chance to detect the effect."""
+    p0, mde, alpha = 0.02, 0.005, 0.05
+    n_star = round(required_n_per_group(p0, mde, alpha, 0.8))
+    power_small = achieved_power(p0, mde, n_star // 2, alpha)
+    power_large = achieved_power(p0, mde, 2 * n_star, alpha)
+    assert 0.0 < power_small < power_large <= 1.0
+
+
+def test_achieved_power_guards() -> None:
+    """n must be an integer >= 1; probability args mirror required_n guards."""
+    with pytest.raises(ValueError, match="n"):
+        achieved_power(0.02, 0.005, 0, 0.05)
+    with pytest.raises(ValueError, match="n"):
+        achieved_power(0.02, 0.005, -100, 0.05)
+    with pytest.raises(ValueError, match="n"):
+        achieved_power(0.02, 0.005, 10.5, 0.05)
+    with pytest.raises(ValueError, match="base_rate"):
+        achieved_power(0.0, 0.005, 100, 0.05)
+    with pytest.raises(ValueError, match="mde"):
+        achieved_power(0.02, 0.0, 100, 0.05)
+    with pytest.raises(ValueError, match="alpha"):
+        achieved_power(0.02, 0.005, 100, 0.0)
