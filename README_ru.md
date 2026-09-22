@@ -3,7 +3,7 @@
 Статистически строгий анализ конверсий в воронке интернет-магазина косметики: один предрегистрированный дизайн, три проверяемых семейства сегментов, честный батарей проверок на устойчивость (robustness) и рассчитанный A/B-эксперимент для единственной практически значимой проблемы — обнаружения премиальных товаров.
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/)
-[![Tests 80 passed](https://img.shields.io/badge/tests-80%20passed-brightgreen)](https://github.com/dimassaa/ecommerce-funnel-analysis)
+[![Tests 83 passed](https://img.shields.io/badge/tests-83%20passed-brightgreen)](https://github.com/dimassaa/ecommerce-funnel-analysis)
 [![License MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Pre-registration](https://img.shields.io/badge/pre--registration-pinned-blue)](reports/pre_registration.md)
 
@@ -67,7 +67,7 @@ scripts/
   etl_pipeline.py    events.parquet -> sessions.parquet + отчёт по воронке + jump-диагностика
   build_notebook.py  Общий раннер сборки и запуска ноутбуков
 notebooks/           Запущенные ноутбуки 01-06 + их генераторы build_*.py
-tests/               Набор pytest для src/ (80 тестов)
+tests/               Набор pytest для src/ (83 тестов)
 reports/
   pre_registration.md         Зафиксированный конфирматорный план (SHA 35317bc)
   05_executive_summary.html   HTML-конспект результатов
@@ -332,7 +332,7 @@ Jump-диагностика воронки (ноутбук 02): **29,328** се�
 .venv/bin/python -m pytest tests/ -q
 ```
 
-**Ожидается: 80 passed.**
+**Ожидается: 83 passed.**
 
 Набор покрывает только расчётное ядро: алгебру Wilson для воронки (`test_funnel_rates.py`), построение признаков сессий, включая границы сегментов и оговорку о переиспользованных сессиях (`test_funnel_session_features.py`), целостность сегментов (`test_segments.py`) и слой статистических выводов — флаги валидности хи-квадрата, гейт разреженных ячеек, двухвыборочный z, размер выборки и мощность — с перекрёстной сверкой со `statsmodels`/`scipy` там, где существует эталонная реализация (`test_inference.py`). Ноутбуки дымово тестируются на `errors=none` (`test_smoke.py`); графики и пламбинг данных покрыты `test_plots.py` и `test_data_io.py`/`test_eda.py`.
 

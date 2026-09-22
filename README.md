@@ -3,7 +3,7 @@
 A statistically rigorous funnel-conversion analysis of a cosmetics e-commerce dataset: one pre-registered confirmatory design, three tested segment families, an honest robustness battery, and a sized A/B proposal for the single decision-relevant problem — premium-item discovery.
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/)
-[![Tests 80 passed](https://img.shields.io/badge/tests-80%20passed-brightgreen)](https://github.com/dimassaa/ecommerce-funnel-analysis)
+[![Tests 83 passed](https://img.shields.io/badge/tests-83%20passed-brightgreen)](https://github.com/dimassaa/ecommerce-funnel-analysis)
 [![License MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Pre-registration](https://img.shields.io/badge/pre--registration-pinned-blue)](reports/pre_registration.md)
 
@@ -67,7 +67,7 @@ scripts/
   etl_pipeline.py    events.parquet -> sessions.parquet + funnel report + jump diagnostics
   build_notebook.py  Shared notebook build-and-execute runner
 notebooks/           Executed notebooks 01-06 + their build_*.py generators
-tests/               pytest suite for src/ (80 tests)
+tests/               pytest suite for src/ (83 tests)
 reports/
   pre_registration.md         The pinned confirmatory plan (SHA 35317bc)
   05_executive_summary.html   HTML executive summary
@@ -332,7 +332,7 @@ The design is **feasible** within the observed premium traffic, and it is honest
 .venv/bin/python -m pytest tests/ -q
 ```
 
-**Expected: 80 passed.**
+**Expected: 83 passed.**
 
 The suite covers the calculation core only: funnel Wilson algebra (`test_funnel_rates.py`), session-feature construction including tier boundaries and the shared-session caveat (`test_funnel_session_features.py`), segments integrity (`test_segments.py`), and the inference layer — chi-squared validity flags, sparse-cell gate, two-proportion z, sample-size/power — cross-validated against `statsmodels`/`scipy` where a reference implementation exists (`test_inference.py`). Notebooks are smoke-tested to `errors=none` (`test_smoke.py`); charts and integrity plumbing are covered by `test_plots.py` and `test_data_io.py`/`test_eda.py`.
 
