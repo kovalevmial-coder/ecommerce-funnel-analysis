@@ -8,6 +8,10 @@ with honest, per-assertion relative tolerances.
 """
 from __future__ import annotations
 
+import math
+
+from scipy import stats
+
 
 def wilson_ci(success: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """Wilson (score) confidence interval for a binomial proportion.
@@ -52,3 +56,84 @@ def wilson_ci(success: int, n: int, z: float = 1.96) -> tuple[float, float]:
     ci_low = max(0.0, (centre - radius) / normalise)
     ci_high = min(1.0, (centre + radius) / normalise)
     return ci_low, ci_high
+
+
+def two_prop_ztest(
+    a_events: int, a_n: int, b_events: int, b_n: int
+) -> dict[str, float | bool | None]:
+    """Pooled two-proportion z-test with a Wald difference confidence interval.
+
+    Tests H0: p_a == p_b against H1: p_a != p_b (two-sided) by computing the
+    z statistic under the pooled null rate ``(a_events + b_events) /
+    (a_n + b_n)`` — the same model statsmodels ``proportions_ztest`` uses by
+    default (prop_var=False). The ``ci_low``/``ci_high`` pair is the Wald
+    interval of the observed difference ``p_a - p_b`` at the teaching z=1.96,
+    built on the unpooled large-sample standard error
+    ``sqrt(p_a(1-p_a)/a_n + p_b(1-p_b)/b_n)``.
+
+    (controlling note) Plan file docs/superpowers/plans/04-inference.md and
+    the task brief refer to a ``two_sided=True`` keyword for the statsmodels
+    cross-check ``confint_proportions_2indep``; the actual statsmodels
+    signature has no such parameter — it is two-sided by default and resolves
+    alpha to z=1.95996... This module intentionally pins z=1.96 (teaching
+    scale of the plan), so the Wald CI is cross-checked at rel=1e-3, not
+    1e-6. This is a documented parametrisation diff, not a code bug.
+    """
+    if a_n <= 0 or b_n <= 0:
+        raise ValueError(f"n must be > 0, got a_n={a_n}, b_n={b_n}")
+    if not (0 <= a_events <= a_n and 0 <= b_events <= b_n):
+        raise ValueError(
+            f"0 <= events <= n required, got a_events={a_events}, a_n={a_n}, "
+            f"b_events={b_events}, b_n={b_n}"
+        )
+
+    p_a = a_events / a_n
+    p_b = b_events / b_n
+    diff = p_a - p_b
+    pooled = (a_events + b_events) / (a_n + b_n)
+
+    # Sparse guard (rule: min expected count < 5): the normal approximation is
+    # unreliable when too few events; report rates descriptively, no stats.
+    min_expected = min(
+        a_n * p_a, a_n * (1 - p_a), b_n * p_b, b_n * (1 - p_b)
+    )
+    sparse = min_expected < 5
+
+    if sparse:
+        return {
+            "p_a": float(p_a),
+            "p_b": float(p_b),
+            "diff": float(diff),
+            "z": None,
+            "p_value": None,
+            "ci_low": None,
+            "ci_high": None,
+            "pooled": float(pooled),
+            "sparse": True,
+            "n_ok": False,
+        }
+
+    # Pooled-variance z under H0: the null rate dominates both arms' sampling
+    # error, so the standard error uses pooled, not the observed rates.
+    se_pooled = math.sqrt(
+        pooled * (1 - pooled) * (1 / a_n + 1 / b_n)
+    )
+    z = diff / se_pooled
+    p_value = 2.0 * stats.norm.sf(abs(z))
+    # Wald interval of the difference on the unpooled SE; z=1.96 is the plan's
+    # teaching scale (see parametrisation note in the docstring).
+    se_wald = math.sqrt(
+        p_a * (1 - p_a) / a_n + p_b * (1 - p_b) / b_n
+    )
+    return {
+        "p_a": float(p_a),
+        "p_b": float(p_b),
+        "diff": float(diff),
+        "z": float(z),
+        "p_value": float(p_value),
+        "ci_low": float(diff - 1.96 * se_wald),
+        "ci_high": float(diff + 1.96 * se_wald),
+        "pooled": float(pooled),
+        "sparse": False,
+        "n_ok": True,
+    }

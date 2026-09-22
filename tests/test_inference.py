@@ -22,9 +22,13 @@ from __future__ import annotations
 
 import pytest
 from scipy import stats
-from statsmodels.stats.proportion import proportion_confint
+from statsmodels.stats.proportion import (
+    confint_proportions_2indep,
+    proportion_confint,
+    proportions_ztest,
+)
 
-from src.inference import wilson_ci
+from src.inference import two_prop_ztest, wilson_ci
 
 # True Wilson endpoints at the pinned teaching default z=1.96, computed from
 # the closed form and cross-checked against statsmodels with the same z.
@@ -75,3 +79,88 @@ def test_wilson_ci_raises_when_success_outside_range() -> None:
         wilson_ci(-1, 100)
     with pytest.raises(ValueError, match="success"):
         wilson_ci(101, 100)
+
+
+def test_two_prop_ztest_normal_path_matches_statsmodels() -> None:
+    """The pooled z-statistic and two-sided p-value must match statsmodels exactly.
+
+    statsmodels ``proportions_ztest`` uses pooled H0 variance by default
+    (prop_var=False), which is the same model as ``two_prop_ztest``, so the
+    comparison is apples-to-apples at rel=1e-6. The Wald difference CI is
+    cross-checked at the looser rel=1e-3: statsmodels resolves alpha=0.05 to
+    z=1.95996... via ``norm.isf``, while this module pins the teaching
+    constant z=1.96 — a documented parametrisation difference, not a code bug.
+    """
+    a_events, a_n, b_events, b_n = 50, 1000, 40, 1000
+    res = two_prop_ztest(a_events, a_n, b_events, b_n)
+    # Point estimates and the pooled H0 rate are deterministic fractions.
+    assert res["p_a"] == pytest.approx(50 / 1000, rel=1e-9)
+    assert res["p_b"] == pytest.approx(40 / 1000, rel=1e-9)
+    assert res["diff"] == pytest.approx(0.01, rel=1e-9)
+    assert res["pooled"] == pytest.approx((50 + 40) / 2000, rel=1e-9)
+
+    ref_z, ref_p = proportions_ztest(
+        [a_events, b_events], [a_n, b_n], alternative="two-sided"
+    )
+    assert res["z"] == pytest.approx(float(ref_z), rel=1e-6)
+    assert res["p_value"] == pytest.approx(float(ref_p), rel=1e-6)
+
+    ref_low, ref_high = confint_proportions_2indep(
+        a_events, a_n, b_events, b_n, method="wald", compare="diff"
+    )
+    assert res["ci_low"] == pytest.approx(float(ref_low), rel=1e-3)
+    assert res["ci_high"] == pytest.approx(float(ref_high), rel=1e-3)
+
+    assert res["sparse"] is False
+    assert res["n_ok"] is True
+    # The result dict must carry plain floats, not numpy scalars.
+    assert isinstance(res["z"], float)
+
+
+def test_two_prop_ztest_normal_path_has_non_none_stats() -> None:
+    """Normal path: z/p/CI are computed (sparse guard must not misfire)."""
+    res = two_prop_ztest(50, 1000, 40, 1000)
+    assert res["z"] is not None
+    assert res["p_value"] is not None
+    assert res["ci_low"] is not None
+    assert res["ci_high"] is not None
+
+
+def test_two_prop_ztest_sparse_returns_description_only() -> None:
+    """Sparse cells (min expected count < 5) must not produce a z/CI.
+
+    a_events=2, a_n=100 gives min(n_a*p_a, n_a*(1-p_a), ...) = 2*0.02 = 0.04 < 5,
+    so the normal approximation is unreliable: return rates descriptively and
+    set z/p/CI to None, flagging ``sparse=True`` and ``n_ok=False``.
+    """
+    res = two_prop_ztest(2, 100, 50, 1000)
+    assert res["sparse"] is True
+    assert res["n_ok"] is False
+    assert res["z"] is None
+    assert res["p_value"] is None
+    assert res["ci_low"] is None
+    assert res["ci_high"] is None
+    # Descriptive rates are still reported.
+    assert res["p_a"] == pytest.approx(0.02, rel=1e-9)
+    assert res["p_b"] == pytest.approx(0.05, rel=1e-9)
+    assert res["diff"] == pytest.approx(-0.03, rel=1e-9)
+    assert res["pooled"] == pytest.approx((2 + 50) / 1100, rel=1e-9)
+    assert isinstance(res["p_a"], float)
+
+
+def test_two_prop_ztest_raises_on_non_positive_n() -> None:
+    """n=0 on either arm is a caller bug; fail fast and loud."""
+    with pytest.raises(ValueError, match="n"):
+        two_prop_ztest(50, 0, 40, 1000)
+    with pytest.raises(ValueError, match="n"):
+        two_prop_ztest(50, 1000, 40, 0)
+
+
+def test_two_prop_ztest_raises_when_events_outside_range() -> None:
+    """events outside [0, n] on either arm would produce a meaningless rate."""
+    with pytest.raises(ValueError, match="events"):
+        two_prop_ztest(-1, 1000, 40, 1000)
+    with pytest.raises(ValueError, match="events"):
+        two_prop_ztest(1001, 1000, 40, 1000)
+    with pytest.raises(ValueError, match="events"):
+        two_prop_ztest(50, 1000, 1001, 1000)
