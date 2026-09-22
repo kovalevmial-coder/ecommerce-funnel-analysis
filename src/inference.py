@@ -395,6 +395,11 @@ def achieved_power(base_rate: float, mde: float, n: int, alpha: float) -> float:
     """
     if isinstance(n, bool) or not isinstance(n, (int, float, np.integer)):
         raise ValueError(f"n must be an integer >= 1, got n={n!r}")
+    # inf/nan are floats that int() chokes on (OverflowError); reject them as
+    # contract violations first so the module reports ValueError uniformly
+    # with required_n's own overflow handling.
+    if isinstance(n, float) and not math.isfinite(n):
+        raise ValueError(f"n must be an integer >= 1, got n={n}")
     n_val = int(n)
     if n_val != n or n_val < 1:
         raise ValueError(f"n must be an integer >= 1, got n={n}")

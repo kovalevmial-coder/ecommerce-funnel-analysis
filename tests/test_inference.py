@@ -503,9 +503,32 @@ def test_achieved_power_guards() -> None:
         achieved_power(0.02, 0.005, -100, 0.05)
     with pytest.raises(ValueError, match="n"):
         achieved_power(0.02, 0.005, 10.5, 0.05)
+    # inf/nan must be ValueError (the float type gate accepts them, and int()
+    # alone would raise OverflowError) — review carry from Task 4.
+    with pytest.raises(ValueError, match="n"):
+        achieved_power(0.02, 0.005, float("inf"), 0.05)
+    with pytest.raises(ValueError, match="n"):
+        achieved_power(0.02, 0.005, float("nan"), 0.05)
+    # bool is rejected so True cannot silently mean n=1 (docstring contract).
+    with pytest.raises(ValueError, match="n"):
+        achieved_power(0.02, 0.005, True, 0.05)
     with pytest.raises(ValueError, match="base_rate"):
         achieved_power(0.0, 0.005, 100, 0.05)
     with pytest.raises(ValueError, match="mde"):
         achieved_power(0.02, 0.0, 100, 0.05)
     with pytest.raises(ValueError, match="alpha"):
         achieved_power(0.02, 0.005, 100, 0.0)
+
+
+def test_achieved_power_negative_mde_round_trip() -> None:
+    """|mde| in the power formula is load-bearing for a negative effect.
+
+    Without the abs() the z-shift would go negative and power would collapse.
+    The n used comes from the *same-signed* sizing (a -mde effect has a
+    different pooled variance than +mde at the same baseline, so only equal
+    signs round-trip cleanly).
+    """
+    target = 0.8
+    n_neg = round(required_n_per_group(0.05, -0.01, 0.05, target))
+    got = achieved_power(0.05, -0.01, n_neg, 0.05)
+    assert got == pytest.approx(target, rel=0.05)
