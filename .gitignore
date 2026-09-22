@@ -25,3 +25,5 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+# Stage-05 smoke utility (developer local, never committed)
+scripts/_smoke_nb.py
