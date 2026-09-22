@@ -26,7 +26,9 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Known values: (success=0, n=100) → CI ≈ (0, 0.0362); (100,100) → ≈ (0.9638, 1); (50,100) → ≈ (0.4038, 0.5962). Use `pytest.approx(rel=1e-6)`. Also negative path: `n=0` raises. Run; verify failure.
+Known values at the default z=1.96: (success=0, n=100) → CI = (0, 0.03699); (100,100) → (0.96301, 1); (50,100) → (0.40383, 0.59617). Use `pytest.approx(rel=1e-6)`. Also negative path: `n=0` raises. Run; verify failure.
+
+> **Correction (2026-09-22, controller):** the original anchors here — (0, 0.0362), (0.9638, 1) — were Clopper–Pearson endpoints (statsmodels `method="beta"`), not Wilson; the 50/100 midpoint was a 4-decimal rounding that failed rel=1e-6. The corrected constants above are the true Wilson endpoints at z=1.96 and are pinned at rel=1e-6.
 
 - [ ] **Step 2: Implement `wilson_ci`**
 
