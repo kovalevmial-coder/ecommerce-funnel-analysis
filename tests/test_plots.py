@@ -1,11 +1,13 @@
-"""Tests for the funnel chart module (src/plots.py).
+"""Tests for the chart module (src/plots.py).
 
-The tests pin the file-level contract of ``plot_funnel`` — a PNG materialises
+The tests pin the file-level contracts of ``plot_funnel``,
+``plot_segment_rates`` and ``plot_price_conversion_curve`` — a PNG materialises
 at the requested path (creating missing parent directories), is non-empty and
 starts with the PNG magic bytes — rather than any pixel content: aesthetics are
 deliberately out of scope for CI (the human sanity look happens in the stage
-notebook / report). The ``assets_path`` path-by-convention helper and the
-fail-fast column guard are pinned here too.
+notebook / report). The ``assets_path`` path-by-convention helper, the fail-fast
+column guards and the segment/price-curve semantics (step filtering, sorting,
+NA handling) are pinned here too.
 """
 from __future__ import annotations
 
@@ -13,8 +15,14 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from matplotlib.collections import PolyCollection
 
-from src.plots import assets_path, plot_funnel
+from src.plots import (
+    assets_path,
+    plot_funnel,
+    plot_price_conversion_curve,
+    plot_segment_rates,
+)
 
 # pyplot is imported for the close-contract assertion below; src.plots already
 # forces the Agg backend at import, so this is safe under any display.
@@ -101,3 +109,257 @@ def test_plot_funnel_fails_fast_on_missing_columns(tmp_path: Path) -> None:
     """Missing contract columns must raise, listing the absent ones (fail-fast)."""
     with pytest.raises(ValueError, match="ci_high"):
         plot_funnel(_funnel_frame().drop("ci_high"), tmp_path / "x.png")
+
+
+# --- plot_segment_rates ---------------------------------------------------
+
+
+# segment_funnel output schema, hand-set to two steps with internally
+# consistent Wilson CIs (precomputed via ``src.funnel._wilson_ci``):
+#   view->cart:   NA 5/50=0.10  CI (0.043475, 0.213605)   n=50
+#                 weak 30/100=0.30 CI (0.218948, 0.395850) n=100
+#                 strong 120/200=0.60 CI (0.530835, 0.665395) n=200
+#   cart->purchase: weak 12/60=0.20 CI (0.118284, 0.317820) n=100
+#                   strong 48/120=0.40 CI (0.316763, 0.489441) n=200
+# The view->cart rows are deliberately NOT ordered by rate so the test can prove
+# the function sorts; the cart->purchase rows exist only to prove step filtering.
+_SEGMENT_ROWS = [
+    {
+        "step": "view->cart",
+        "numerator": 30,
+        "denominator": 100,
+        "rate": 0.3,
+        "ci_low": 0.218948,
+        "ci_high": 0.39585,
+        "segment": "weak",
+        "n_sessions": 100,
+    },
+    {
+        "step": "view->cart",
+        "numerator": 5,
+        "denominator": 50,
+        "rate": 0.1,
+        "ci_low": 0.043475,
+        "ci_high": 0.213605,
+        "segment": "NA",
+        "n_sessions": 50,
+    },
+    {
+        "step": "view->cart",
+        "numerator": 120,
+        "denominator": 200,
+        "rate": 0.6,
+        "ci_low": 0.530835,
+        "ci_high": 0.665395,
+        "segment": "strong",
+        "n_sessions": 200,
+    },
+    {
+        "step": "cart->purchase",
+        "numerator": 12,
+        "denominator": 60,
+        "rate": 0.2,
+        "ci_low": 0.118284,
+        "ci_high": 0.31782,
+        "segment": "weak",
+        "n_sessions": 100,
+    },
+    {
+        "step": "cart->purchase",
+        "numerator": 48,
+        "denominator": 120,
+        "rate": 0.4,
+        "ci_low": 0.316763,
+        "ci_high": 0.489441,
+        "segment": "strong",
+        "n_sessions": 200,
+    },
+]
+
+
+def _segment_frame() -> pl.DataFrame:
+    """Build the synthetic segment_funnel-shaped frame (schema mirrors its output)."""
+    return pl.DataFrame(_SEGMENT_ROWS)
+
+
+def _spy_on_close(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Capture the axes of the figure a function closes before it is discarded.
+
+    The plot functions always ``plt.close`` their figure, so to assert on the
+    drawing (sorting, filtering, colours) the test intercepts ``plt.close``,
+    keeps a reference to the axes, then delegates to the real close so the
+    close-contract (``plt.get_fignums() == []``) still holds.
+    """
+    captured: dict = {}
+    real_close = plt.close  # capture BEFORE monkeypatching (the patched name is _spy)
+
+    def _spy(fig=None) -> None:
+        if fig is not None and fig.axes:
+            captured["ax"] = fig.axes[0]
+        real_close(fig)
+
+    monkeypatch.setattr(plt, "close", _spy)
+    return captured
+
+
+def test_plot_segment_rates_writes_png_into_missing_parent_dirs(tmp_path: Path) -> None:
+    """A PNG must land at out_path with parents created; figure closed, nothing returned."""
+    out = tmp_path / "figures" / "segments" / "seg.png"
+    assert not out.parent.exists()
+
+    result = plot_segment_rates(_segment_frame(), "view->cart", out)
+
+    assert out.exists()
+    assert out.stat().st_size > 0
+    assert _png_signature(out) == b"\x89PNG\r\n\x1a\n"
+    assert result is None
+    assert plt.get_fignums() == []
+
+
+def test_plot_segment_rates_sorts_by_rate_and_draws_only_the_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the requested step's segments are drawn, one bar each, sorted ascending by rate."""
+    captured = _spy_on_close(monkeypatch)
+
+    plot_segment_rates(_segment_frame(), "view->cart", tmp_path / "seg.png")
+
+    ax = captured["ax"]
+    ylabels = [t.get_text() for t in ax.get_yticklabels()]
+    assert ylabels == ["NA", "weak", "strong"]  # ascending rate, highest on top
+    assert len(ax.patches) == 3  # bars == segments of THIS step only (5 rows in frame)
+    assert "view->cart" in ax.get_title()
+    assert plt.get_fignums() == []
+
+
+def test_plot_segment_rates_reports_na_segment_when_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The NA price tier must be shown, never silently dropped before Stage 04/05."""
+    na_frame = _segment_frame().filter(pl.col("segment").is_in(["NA", "weak"]))
+    captured = _spy_on_close(monkeypatch)
+
+    plot_segment_rates(na_frame, "view->cart", tmp_path / "seg.png")
+
+    ylabels = [t.get_text() for t in captured["ax"].get_yticklabels()]
+    assert "NA" in ylabels
+    assert len(captured["ax"].patches) == 2  # both the NA and the regular tier render
+
+
+def test_plot_segment_rates_fails_fast_on_missing_columns(tmp_path: Path) -> None:
+    """Missing contract columns (labels need n_sessions, whiskers need ci_*) must raise."""
+    with pytest.raises(ValueError, match="n_sessions"):
+        plot_segment_rates(_segment_frame().drop("n_sessions"), "view->cart", tmp_path / "x.png")
+
+
+def test_plot_segment_rates_fails_fast_on_unknown_step(tmp_path: Path) -> None:
+    """A step not present in the frame means empty output — raise, not silently plot."""
+    with pytest.raises(ValueError, match="not in seg_rates"):
+        plot_segment_rates(_segment_frame(), "view->purchase", tmp_path / "x.png")
+
+
+# --- plot_price_conversion_curve ------------------------------------------
+
+
+def _price_sessions_frame(n: int = 50) -> pl.DataFrame:
+    """Deterministic sessions_features-shaped fixture for the price curve.
+
+    Prices rise linearly so the decile bins separate cleanly. Flags follow small
+    interleaved patterns (every session viewed, every third session did not
+    cart, a quarter of carted sessions purchased) so every bin keeps non-zero
+    denominators for both plotted steps.
+    """
+    rows = [
+        {
+            "median_price": 1.0 + 3.0 * i,
+            "has_view": True,
+            "has_cart": i % 3 != 0,
+            "has_purchase": i % 3 != 0 and i % 4 == 0,
+        }
+        for i in range(n)
+    ]
+    return pl.DataFrame(rows)
+
+
+def test_plot_price_conversion_curve_writes_png_into_missing_parent_dirs(tmp_path: Path) -> None:
+    """A PNG must land at out_path with parents created; figure closed, nothing returned."""
+    out = tmp_path / "figures" / "price.png"
+    assert not out.parent.exists()
+
+    result = plot_price_conversion_curve(_price_sessions_frame(), out)
+
+    assert out.exists()
+    assert out.stat().st_size > 0
+    assert _png_signature(out) == b"\x89PNG\r\n\x1a\n"
+    assert result is None
+    assert plt.get_fignums() == []
+
+
+def test_plot_price_conversion_curve_draws_two_banded_rates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One line per funnel step (view->cart, cart->purchase) with a CI ribbon each."""
+    captured = _spy_on_close(monkeypatch)
+
+    plot_price_conversion_curve(_price_sessions_frame(), tmp_path / "price.png")
+
+    ax = captured["ax"]
+    line_labels = [line.get_label() for line in ax.get_lines()]
+    assert line_labels == ["view->cart", "cart->purchase"]
+    n_ribbons = sum(1 for c in ax.collections if isinstance(c, PolyCollection))
+    assert n_ribbons == 2
+    assert "median price" in ax.get_title().lower()
+    assert plt.get_fignums() == []
+
+
+def test_plot_price_conversion_curve_drops_null_prices_explicitly(tmp_path: Path) -> None:
+    """Null median_price rows are documented-excluded (unpriceable), not silently kept."""
+    frame = _price_sessions_frame().with_columns(
+        pl.when(pl.int_range(pl.len()) >= 45)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("median_price"))
+        .alias("median_price")
+    )
+
+    plot_price_conversion_curve(frame, tmp_path / "price.png")
+
+    assert (tmp_path / "price.png").exists()
+    assert (tmp_path / "price.png").stat().st_size > 0
+    assert plt.get_fignums() == []
+
+
+def test_plot_price_conversion_curve_raises_when_no_binable_rows(tmp_path: Path) -> None:
+    """A frame whose median_price is entirely null has nothing to plot — raise loudly."""
+    all_null = _price_sessions_frame(10).with_columns(
+        pl.lit(None, dtype=pl.Float64).alias("median_price")
+    )
+    with pytest.raises(ValueError, match="median_price"):
+        plot_price_conversion_curve(all_null, tmp_path / "x.png")
+
+
+def test_plot_price_conversion_curve_skips_bins_without_denominator(tmp_path: Path) -> None:
+    """A bin with no has_cart rows must not break cart->purchase — that point is skipped."""
+    # 20 rows, so the top price bin holds exactly the two highest prices; neither
+    # of those sessions carts, so cart->purchase has a null denominator there.
+    rows = [
+        {
+            "median_price": 1.0 + 3.0 * i,
+            "has_view": True,
+            "has_cart": i < 18,
+            "has_purchase": i < 18 and i % 6 == 0,
+        }
+        for i in range(20)
+    ]
+    plot_price_conversion_curve(pl.DataFrame(rows), tmp_path / "price.png")
+
+    assert (tmp_path / "price.png").exists()
+    assert (tmp_path / "price.png").stat().st_size > 0
+    assert plt.get_fignums() == []
+
+
+def test_plot_price_conversion_curve_fails_fast_on_missing_columns(tmp_path: Path) -> None:
+    """Missing contract columns must raise, listing the absent ones (fail-fast)."""
+    with pytest.raises(ValueError, match="has_cart"):
+        plot_price_conversion_curve(
+            _price_sessions_frame().drop("has_cart"), tmp_path / "x.png"
+        )
