@@ -1,6 +1,6 @@
-"""Tests for the Wilson (score) confidence interval in src/inference.py.
+"""Tests for the confirmatory statistics in src/inference.py.
 
-The file pins three distinct things:
+Wilson (score) confidence interval pins three distinct things:
 1. The teaching default z=1.96 produces the true Wilson endpoints on boundary
    and interior points (rel=1e-6 against hand-computed constants).
 2. The formula matches statsmodels ``proportion_confint(method="wilson")`` at
@@ -8,6 +8,15 @@ The file pins three distinct things:
    z-rounding confound (statsmodels' two-sided alpha=0.05 resolves to
    z=1.95996..., not the Stage-04 teaching constant 1.96).
 3. The guards raise ValueError on impossible inputs.
+
+Chi-square + multiple-comparison corrections pin:
+4. chi2_independence reproduces scipy.stats.chi2_contingency exactly
+   (identity, including the 2x2 Yates correction defaults) and exposes the
+   expected-table minimum behind the sparse guard (valid = expected_min >= 5).
+5. The polars DataFrame input path yields the same numbers as list/ndarray.
+6. bonferroni/fdr_bh match hand values and statsmodels multipletests at
+   rel=1e-6 (fdr_bh including tied and extreme p-values), and are NaN-safe:
+   a NaN p-value propagates to a NaN output position without crashing.
 
 Plan-artifact correction (documented per controller ruling): the published
 known values in docs/superpowers/plans/04-inference.md Task 1 Step 1 are NOT
@@ -17,18 +26,29 @@ returns 0.0362167 / 0.9637833), and (50,100) -> (0.4038, 0.5962) is a 4-decimal
 rounding of the true endpoints. All three published anchors fail rel=1e-6. The
 constants below are the true Wilson endpoints at z=1.96, verified against
 statsmodels with the identical z (diff 0.0 for every endpoint).
+
+Brief-example correction (task-3): the task brief's sparse example
+[[10,0],[0,10]] actually has expected_min = 5.0 (row/col totals 10/10/20 give
+expected cells of exactly 5), so it is the boundary for valid, not a sparse
+counterexample. The genuinely sparse test uses [[20,0],[0,2]]
+(expected_min ~ 0.18); [[10,0],[0,10]] pins the valid=True boundary instead.
 """
 from __future__ import annotations
 
+import math
+
+import numpy as np
+import polars as pl
 import pytest
 from scipy import stats
+from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import (
     confint_proportions_2indep,
     proportion_confint,
     proportions_ztest,
 )
 
-from src.inference import two_prop_ztest, wilson_ci
+from src.inference import bonferroni, chi2_independence, fdr_bh, two_prop_ztest, wilson_ci
 
 # True Wilson endpoints at the pinned teaching default z=1.96, computed from
 # the closed form and cross-checked against statsmodels with the same z.
@@ -159,10 +179,191 @@ def test_two_prop_ztest_raises_on_non_positive_n() -> None:
 
 
 def test_two_prop_ztest_raises_when_events_outside_range() -> None:
-    """events outside [0, n] on either arm would produce a meaningless rate."""
+    """events outside [0,1] on either arm would produce a meaningless rate."""
     with pytest.raises(ValueError, match="events"):
         two_prop_ztest(-1, 1000, 40, 1000)
     with pytest.raises(ValueError, match="events"):
         two_prop_ztest(1001, 1000, 40, 1000)
     with pytest.raises(ValueError, match="events"):
         two_prop_ztest(50, 1000, 1001, 1000)
+
+
+# --- chi2_independence -------------------------------------------------------
+# Identity cross-check: the wrapper must be a transparent pass-through to
+# scipy.stats.chi2_contingency with its default arguments (correction=True for
+# 2x2), so calling scipy on the same table pins chi2/dof/p_value exactly.
+
+_CHI2_TABLE_2X2 = [[50, 30], [20, 40]]
+
+
+def test_chi2_independence_matches_scipy_identity() -> None:
+    """chi2/dof/p_value/expected_min must equal scipy on the same table.
+
+    Identity (rel ~0) is the strongest possible pin: no parametrisation note
+    applies because both sides call scipy.stats.chi2_contingency with defaults
+    (Yates correction applies to 2x2 chi2, not to the expected table — the
+    expected counts are computed identically under correction=True/False).
+    """
+    got = chi2_independence(_CHI2_TABLE_2X2)
+    chi2_ref, p_ref, dof_ref, expected_ref = stats.chi2_contingency(
+        _CHI2_TABLE_2X2
+    )
+    assert got["chi2"] == pytest.approx(float(chi2_ref), rel=1e-12)
+    assert got["dof"] == dof_ref
+    assert got["p_value"] == pytest.approx(float(p_ref), rel=1e-12)
+    # expected_min is the min of the scipy-returned expected table (the
+    # ruling: expected counts are correction-independent, same call).
+    assert got["expected_min"] == pytest.approx(
+        float(expected_ref.min()), rel=1e-12
+    )
+    assert got["valid"] is True
+    # Plain Python types, not numpy scalars (np.float64 subclasses float).
+    assert type(got["chi2"]) is float
+    assert type(got["dof"]) is int
+    assert type(got["p_value"]) is float
+    assert type(got["expected_min"]) is float
+    assert type(got["valid"]) is bool
+
+
+def test_chi2_independence_polars_input_path() -> None:
+    """A polars DataFrame (the notebook_04 contingency shape) must normalize
+    to the same result as the equivalent list-of-lists input.
+
+    The confirmatory notebook builds a contingency table from a polars
+    groupby; this pins the `.to_numpy()` conversion path inside the wrapper.
+    """
+    df = pl.DataFrame(
+        {
+            "converted": [10, 15, 12, 8],
+            "not_converted": [20, 25, 38, 52],
+        }
+    )
+    from_polars = chi2_independence(df)
+    from_list = chi2_independence(df.to_numpy().tolist())
+    for key in ("chi2", "dof", "p_value", "expected_min", "valid"):
+        assert from_polars[key] == from_list[key], key
+    chi2_ref, p_ref, dof_ref, expected_ref = stats.chi2_contingency(
+        df.to_numpy()
+    )
+    assert from_polars["chi2"] == pytest.approx(float(chi2_ref), rel=1e-12)
+    assert from_polars["p_value"] == pytest.approx(float(p_ref), rel=1e-12)
+    assert from_polars["expected_min"] == pytest.approx(
+        float(expected_ref.min()), rel=1e-12
+    )
+
+
+def test_chi2_independence_sparse_expected_min_below_five() -> None:
+    """A genuinely sparse table (expected cell < 5) must set valid=False.
+
+    [[20,0],[0,2]] has row/col totals 20/2/22 -> expected min = 2*2/22 ~
+    0.18 < 5, so the chi-square approximation is unreliable downstream.
+    chi2 and p_value are still reported (valid is a guard flag for the
+    notebook's routing decision, not an error signal). The brief's example
+    [[10,0],[0,10]] is numerically NOT sparse (expected_min = 5.0 exactly,
+    see boundary test below) and is corrected in the module docstring.
+    """
+    table = [[20, 0], [0, 2]]
+    got = chi2_independence(table)
+    chi2_ref, p_ref, _dof_ref, expected_ref = stats.chi2_contingency(table)
+    assert got["expected_min"] == pytest.approx(
+        float(expected_ref.min()), rel=1e-12
+    )
+    assert got["expected_min"] < 5
+    assert got["valid"] is False
+    # Stats are still computed; valid=False routes the caller, it does not
+    # suppress the estimate.
+    assert got["chi2"] == pytest.approx(float(chi2_ref), rel=1e-12)
+    assert got["p_value"] == pytest.approx(float(p_ref), rel=1e-12)
+
+
+def test_chi2_independence_expected_min_boundary_is_valid() -> None:
+    """expected_min exactly 5.0 must be valid=True (inclusive >= rule).
+
+    This pins both the inclusive boundary condition and documents the
+    brief-example correction: [[10,0],[0,10]] has expected cells all 5.0
+    (10*10/20), not 0 as the brief parenthetical claimed.
+    """
+    got = chi2_independence([[10, 0], [0, 10]])
+    assert got["expected_min"] == pytest.approx(5.0, rel=1e-12)
+    assert got["valid"] is True
+
+
+def test_chi2_independence_raises_on_ragged_or_non_2d() -> None:
+    """Ragged rows or 1-D input would silently misparse as a contingency;
+    fail fast instead of broadcasting into a wrong-shaped table."""
+    with pytest.raises(ValueError):
+        chi2_independence([[1, 2], [3]])
+    with pytest.raises(ValueError):
+        chi2_independence([1, 2, 3])
+
+
+# --- bonferroni --------------------------------------------------------------
+
+def test_bonferroni_hand_values_and_cap() -> None:
+    """min(p*k, 1) with k=3 must reproduce the hand-computed product,
+    and p*k>1 must be capped at 1.0 (p-values are probabilities)."""
+    assert bonferroni([0.01, 0.02, 0.03]) == pytest.approx(
+        [0.03, 0.06, 0.09], rel=1e-12
+    )
+    # k=2: 0.6*2=1.2 and 0.7*2=1.4 both exceed 1 -> capped.
+    capped = bonferroni([0.6, 0.7])
+    assert capped == [1.0, 1.0]
+    assert all(type(v) is float for v in capped)
+
+
+def test_bonferroni_empty_and_nan_safe() -> None:
+    """Empty input -> empty output; a NaN p-value maps to NaN (not a crash
+    and not a silent drop) while neighbours still get their correction."""
+    assert bonferroni([]) == []
+    got = bonferroni([0.01, float("nan"), 0.03])
+    assert got[0] == pytest.approx(0.03, rel=1e-12)
+    assert math.isnan(got[1])
+    assert got[2] == pytest.approx(0.09, rel=1e-12)
+
+
+# --- fdr_bh ------------------------------------------------------------------
+
+# Hand-set lists: ties (two equal low p-values) and an extreme p among large
+# values exercise BH's rank/monotonicity steps that a plain p*m list would miss.
+_BH_LISTS = (
+    [0.01, 0.01, 0.03, 0.05],   # tie at the lowest rank
+    [0.0001, 0.4, 0.5, 0.6],    # extreme p among large ps
+    [0.2, 0.02, 0.3, 0.05, 0.01],  # mixed, no ties
+)
+
+
+def test_fdr_bh_matches_statsmodels_multipletests() -> None:
+    """Benjamini-Hochberg must equal statsmodels method='fdr_bh' at rel=1e-6
+    on lists containing ties and an extreme p-value."""
+    for p_values in _BH_LISTS:
+        got = fdr_bh(p_values)
+        ref = multipletests(p_values, method="fdr_bh")[1]
+        for g, r in zip(got, ref):
+            assert g == pytest.approx(float(r), rel=1e-6)
+        assert all(type(v) is float for v in got)
+
+
+def test_fdr_bh_tie_behavior_and_extreme_p() -> None:
+    """Tied low p-values must receive the same corrected value (BH's rank
+    monotonicity pulls the first tied value down to the second's), and an
+    extreme p must stay extreme after correction."""
+    tied = fdr_bh([0.01, 0.01, 0.03, 0.05])
+    # statsmodels reference for this exact list: [0.02, 0.02, 0.04, 0.05].
+    assert tied[0] == pytest.approx(tied[1], rel=1e-12)
+    assert tied[0] == pytest.approx(0.02, rel=1e-6)
+
+    extreme = fdr_bh([0.0001, 0.4, 0.5, 0.6])
+    # statsmodels reference: [0.0004, 0.6, 0.6, 0.6].
+    assert extreme[0] == pytest.approx(0.0004, rel=1e-6)
+    assert extreme[0] < min(extreme[1:])
+
+
+def test_fdr_bh_empty_and_nan_safe() -> None:
+    """Empty input -> empty output; NaN passes through to its own slot
+    without corrupting the corrected values of the remaining hypotheses."""
+    assert fdr_bh([]) == []
+    got = fdr_bh([0.01, float("nan"), 0.03])
+    assert got[0] == pytest.approx(0.03, rel=1e-6)
+    assert math.isnan(got[1])
+    assert got[2] == pytest.approx(0.045, rel=1e-6)
+    assert all(type(v) is float for v in got if not math.isnan(v))

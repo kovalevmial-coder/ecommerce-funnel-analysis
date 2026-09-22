@@ -3,13 +3,18 @@
 This module is the pure-statistics layer of the project: every function is
 self-contained and dataframe-free (NumPy/SciPy only), so the confirmatory
 notebook can reason about the maths without a data-processing dependency.
-Each formula is pinned against statsmodels/scipy in tests/test_inference.py
-with honest, per-assertion relative tolerances.
+``chi2_independence`` still *accepts* a polars/pandas-style frame by
+duck-typing its ``.to_numpy()`` method — no dataframe library is imported
+here, keeping the module pure-stat. Each formula is pinned against
+statsmodels/scipy in tests/test_inference.py with honest, per-assertion
+relative tolerances.
 """
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
+import numpy as np
 from scipy import stats
 
 
@@ -137,3 +142,136 @@ def two_prop_ztest(
         "sparse": False,
         "n_ok": True,
     }
+
+
+def chi2_independence(table: object) -> dict[str, float | int | bool]:
+    """Chi-square test of independence on a contingency table.
+
+    Wraps ``scipy.stats.chi2_contingency`` with its default arguments. For a
+    2x2 table scipy applies Yates' continuity correction to the chi2
+    statistic and p_value (``correction=True``); the expected counts that
+    feed ``expected_min`` come from marginal totals alone and are identical
+    under ``correction=True/False``, so ``expected_min`` is simply the
+    minimum cell of the expected table returned by the same call.
+
+    ``expected_min`` is Cochran's rule-of-thumb floor (every expected cell
+    >= 5); ``valid = expected_min >= 5`` is a *guard flag* for the caller's
+    routing decision (chi-square vs exact/pairwise), NOT an error signal —
+    the chi2/p_value statistics are still reported when ``valid=False``.
+
+    Input normalization (fail-fast):
+      - a polars/pandas-style frame is accepted via duck-typed
+        ``.to_numpy()`` (the confirmatory notebook builds its contingency
+        from a polars groupby);
+      - a ragged list-of-lists raises ``ValueError`` (NumPy >= 1.24 raises
+        instead of silently building an object array);
+      - any non-2-D result raises ``ValueError`` rather than being
+        broadcast into a wrong-shaped table.
+
+    Args:
+        table: 2-D contingency table as list-of-lists, ndarray, or a frame
+            exposing ``to_numpy()`` (polars DataFrame).
+
+    Returns:
+        Dict with ``chi2`` (float), ``dof`` (int), ``p_value`` (float),
+        ``expected_min`` (float), ``valid`` (bool: ``expected_min >= 5``).
+
+    Raises:
+        ValueError: if the input cannot normalize to a 2-D numeric array
+            (ragged rows, 1-D/3-D shape, non-array-like input).
+    """
+    # Duck-typed frame support: polars/pandas expose to_numpy(), ndarray does
+    # not — so the pure-stat module never imports a dataframe library.
+    if hasattr(table, "to_numpy"):
+        table = table.to_numpy()
+    try:
+        arr = np.asarray(table)
+    except ValueError as exc:
+        # Ragged rows: NumPy raises rather than broadcasting into a shape.
+        raise ValueError(
+            f"contingency table must be rectangular: {exc}"
+        ) from exc
+    if arr.ndim != 2:
+        # A 1-D (or 3-D) array is not a contingency table; fail fast.
+        raise ValueError(
+            f"contingency table must be 2-D, got ndim={arr.ndim}"
+        )
+    chi2, p_value, dof, expected = stats.chi2_contingency(arr)
+    expected_min = float(expected.min())
+    return {
+        "chi2": float(chi2),
+        "dof": int(dof),
+        "p_value": float(p_value),
+        "expected_min": expected_min,
+        "valid": expected_min >= 5,
+    }
+
+
+def bonferroni(p_values: Sequence[float]) -> list[float]:
+    """Bonferroni family-wise-error correction: ``min(p * k, 1)`` per value.
+
+    ``k = len(p_values)`` counts every entry as one tested hypothesis,
+    including NaN placeholders (a missing p-value still consumed a test in
+    the multiple-comparison family). A NaN input yields a NaN output —
+    the slot is preserved rather than crashing or being silently dropped —
+    and an empty input yields an empty list. The ``1.0`` cap keeps the
+    result inside the probability range when ``p * k > 1``.
+
+    Args:
+        p_values: raw p-values (NaN allowed as a missing-value marker).
+
+    Returns:
+        Corrected p-values as plain Python floats, same length/order as
+        input; empty list for empty input.
+    """
+    k = len(p_values)
+    corrected = []
+    for p in p_values:
+        p = float(p)
+        # math.isnan rather than `p != p`: explicit and readable.
+        corrected.append(math.nan if math.isnan(p) else min(p * k, 1.0))
+    return corrected
+
+
+def fdr_bh(p_values: Sequence[float]) -> list[float]:
+    """Benjamini-Hochberg FDR correction (step-up); output = BH-adjusted p.
+
+    For the p-values sorted ascending, the adjusted value at rank ``i`` is
+    ``q_i = min(1, min_{j >= i} k * p_j / j)`` — a running minimum taken
+    from the largest rank downward. That backward pass enforces
+    monotonicity (a smaller original p can never receive a larger adjusted
+    value), which is what collapses tied p-values onto one common q and
+    what ``statsmodels.stats.multitest.multipletests(method="fdr_bh")``
+    reproduces at rel=1e-6 (pinned in tests/test_inference.py).
+
+    ``k = len(p_values)`` follows the same hypothesis-count convention as
+    :func:`bonferroni`: NaN slots take no rank but still count toward the
+    family size. A NaN input yields a NaN output at its original position
+    without corrupting the corrected values of the remaining hypotheses;
+    an empty input yields an empty list.
+
+    Args:
+        p_values: raw p-values (NaN allowed as a missing-value marker).
+
+    Returns:
+        BH-adjusted p-values as plain Python floats, same length/order as
+        input; empty list for empty input.
+    """
+    values = [float(p) for p in p_values]
+    if not values:
+        return []
+    k = len(values)
+    # Rank only non-NaN values (ascending); NaN slots keep their positions.
+    ranked = sorted(
+        (i for i, p in enumerate(values) if not math.isnan(p)),
+        key=values.__getitem__,
+    )
+    adjusted = [math.nan] * len(values)
+    # Step-up from the largest rank: q = min(raw BH ratio, previous q, 1.0).
+    running = 1.0
+    for rank in range(len(ranked), 0, -1):
+        idx = ranked[rank - 1]
+        raw = values[idx] * k / rank
+        running = min(raw, running, 1.0)
+        adjusted[idx] = running
+    return adjusted
