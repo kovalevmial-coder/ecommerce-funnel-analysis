@@ -44,7 +44,7 @@ The headline, in one line: the funnel loses most of its volume at **view → car
 ## Tech stack
 
 - **Python 3.12** — runtime, validated by the test suite.
-- **polars** — all data loading, session feature engineering, funnel aggregation and segment workflows (streaming-friendly, never holds the 2.3 GB CSV set in memory).
+- **polars** — all data loading, session feature engineering, funnel aggregation and segment workflows. Polars is used for two reasons: lazy/streaming evaluation keeps the 2.3 GB CSV set off-heap and never materialises it whole, and its Arrow-native columnar engine makes the session/reached-step joins fast enough to iterate on locally.
 - **numpy / scipy** — z-tests, chi-squared tests, confidence intervals (Wilson, Wald).
 - **statsmodels** — normal-approximation sample-size and power functions, BH-FDR multiple-correction (used only to *cross-validate* the hand-rolled `src/inference` functions).
 - **matplotlib** — every committed chart in `assets/`, built from `src/plots.py`.
@@ -238,6 +238,15 @@ The same rates drawn the way a business reads a funnel — as narrowing volume s
 The trapezoid widths are proportional to absolute sessions; the *rate-height* reading is the bar chart above (`funnel_chart.png`, the banner), while this chart carries the *volume-shape* reading — where the funnel physically narrows — that motivates the absolute-loss framing of notebook 05.
 
 Funnel jump diagnostics (notebook 02): **29,328** purchase sessions never carted (18.85% of 155,617 purchase sessions), **197,350** cart sessions never viewed (20.02% of 985,780 cart sessions), **3,431,995** sessions viewed but never carted.
+
+The two *jump* categories are anomalies worth explaining rather than dismissing. The data does not let us adjudicate between the causes — they are hypotheses, not findings, and the analysis treats them as such:
+
+- **Cross-session continuation.** Session ids are arbitrary; a user can view in one session and purchase later from a fresh session (a *saved cart* or a purchase triggered from an email/PDP link), so the purchase session legitimately has no cart/view event. nb06's user-level funnel is partly this effect at work.
+- **Direct links / external entry.** Notifications, emails, ads, or saved-product links can drop an order into a session with no preceding cart/view event.
+- **One-click / accelerated checkout.** A checkout type that skips the in-session cart event would also register as a purchase-without-cart.
+- **Collection quirks.** The dataset has known ingestion artefacts (1,109,098 duplicate rows, 272 reused session ids); a tracking gap that silently drops view/cart events would inflate jump counts the same way.
+
+The practical takeaway is that the *conditional* funnel rates above are **not** a literal per-user journey; they aggregate sessions, and the jumps are bounded and quantified (≤20% of a denominator), not silently ignored.
 
 ### Where the volume is lost (notebook 05)
 
