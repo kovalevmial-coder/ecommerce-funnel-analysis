@@ -11,6 +11,7 @@ NA handling) are pinned here too.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import polars as pl
@@ -312,17 +313,31 @@ def test_plot_price_conversion_curve_draws_two_banded_rates(
     assert plt.get_fignums() == []
 
 
-def test_plot_price_conversion_curve_drops_null_prices_explicitly(tmp_path: Path) -> None:
-    """Null median_price rows are documented-excluded (unpriceable), not silently kept."""
+def test_plot_price_conversion_curve_drops_null_prices_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Null median_price rows are documented-excluded (unpriceable), not silently kept.
+
+    The five nulled rows were the five most expensive ones (136..148 EUR). If
+    they leaked into the quantiles/bins, the top bin's x would reach into that
+    price region; because the plot's x values are in-bin medians of the *priced*
+    rows (max 133 EUR), any x >= 136 proves the nulls were fed to the bins.
+    """
     frame = _price_sessions_frame().with_columns(
         pl.when(pl.int_range(pl.len()) >= 45)
         .then(pl.lit(None, dtype=pl.Float64))
         .otherwise(pl.col("median_price"))
         .alias("median_price")
     )
+    captured = _spy_on_close(monkeypatch)
 
     plot_price_conversion_curve(frame, tmp_path / "price.png")
 
+    ax = captured["ax"]
+    plotted_xs = [x for line in ax.get_lines() for x in line.get_xdata()]
+    assert plotted_xs, "expected at least one plotted rate line"
+    assert min(plotted_xs) >= 1.0  # lowest priced row is 1 EUR
+    assert max(plotted_xs) < 136.0, "nulled rows (136+) must not anchor any bin"
     assert (tmp_path / "price.png").exists()
     assert (tmp_path / "price.png").stat().st_size > 0
     assert plt.get_fignums() == []
@@ -337,21 +352,29 @@ def test_plot_price_conversion_curve_raises_when_no_binable_rows(tmp_path: Path)
         plot_price_conversion_curve(all_null, tmp_path / "x.png")
 
 
-def test_plot_price_conversion_curve_skips_bins_without_denominator(tmp_path: Path) -> None:
-    """A bin with no has_cart rows must not break cart->purchase — that point is skipped."""
-    # 20 rows, so the top price bin holds exactly the two highest prices; neither
-    # of those sessions carts, so cart->purchase has a null denominator there.
+def test_plot_price_conversion_curve_skips_bins_without_denominator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bin with no has_cart rows must not break cart->purchase — that point is NaN.
+
+    Prices are 0..8 plus an isolated 1000 EUR outlier; the 90% quantile break
+    lands at ~107 EUR, so the purely-expensive top bin holds exactly the outlier
+    row, whose has_cart is False. Its cart->purchase basis is therefore empty and
+    the renderer must leave exactly one NaN gap there rather than fabricating a
+    number or a fake join across the gap.
+    """
     rows = [
-        {
-            "median_price": 1.0 + 3.0 * i,
-            "has_view": True,
-            "has_cart": i < 18,
-            "has_purchase": i < 18 and i % 6 == 0,
-        }
-        for i in range(20)
+        {"median_price": float(i), "has_view": True, "has_cart": True, "has_purchase": True}
+        for i in range(9)
     ]
+    rows.append({"median_price": 1000.0, "has_view": True, "has_cart": False, "has_purchase": False})
+    captured = _spy_on_close(monkeypatch)
+
     plot_price_conversion_curve(pl.DataFrame(rows), tmp_path / "price.png")
 
+    cart_line = next(line for line in captured["ax"].get_lines() if line.get_label() == "cart->purchase")
+    ydata = [float(y) for y in cart_line.get_ydata()]
+    assert sum(1 for y in ydata if math.isnan(y)) == 1, "exactly the empty-basis bin must be NaN"
     assert (tmp_path / "price.png").exists()
     assert (tmp_path / "price.png").stat().st_size > 0
     assert plt.get_fignums() == []
