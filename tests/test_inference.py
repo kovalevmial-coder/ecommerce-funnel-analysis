@@ -114,7 +114,9 @@ def test_two_prop_ztest_normal_path_matches_statsmodels() -> None:
     assert res["sparse"] is False
     assert res["n_ok"] is True
     # The result dict must carry plain floats, not numpy scalars.
-    assert isinstance(res["z"], float)
+    # np.float64 subclasses float, so isinstance would pass a leaked numpy
+    # scalar; the contract promises plain Python floats (strict type check).
+    assert type(res["z"]) is float
 
 
 def test_two_prop_ztest_normal_path_has_non_none_stats() -> None:
