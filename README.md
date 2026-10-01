@@ -2,6 +2,16 @@
 
 A statistically rigorous funnel-conversion analysis of a cosmetics e-commerce dataset: one pre-registered confirmatory design, three tested segment families, an honest robustness battery, and a sized A/B proposal for the single decision-relevant problem — premium-item discovery.
 
+
+
+
+
+Без ЗВ никуда
+![alt text](<images (10).jpg>)
+
+
+
+
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/)
 [![Tests 83 passed](https://img.shields.io/badge/tests-83%20passed-brightgreen)](https://github.com/dimassaa/ecommerce-funnel-analysis)
 [![License MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
